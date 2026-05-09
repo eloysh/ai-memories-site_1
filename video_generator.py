@@ -31,7 +31,7 @@ async def generate_grok_video(
             "interval": timedelta(seconds=settings.VIDEO_POLL_SEC),
         }
         if image_url:
-            kwargs["image_url"] = image_url
+            kwargs["reference_image_urls"] = [image_url]
 
         response = client.video.generate(**kwargs)
         return {
