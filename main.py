@@ -10,6 +10,7 @@ from agents import create_episode_pack
 from config import settings
 from image_generator import generate_nano_image
 from telegram_service import get_chat_id, get_text, send_message, send_photo, set_webhook
+from video_generator import generate_grok_video
 
 
 DEFAULT_TITLE = "Ты её потерял"
@@ -36,6 +37,19 @@ class ImageRequest(BaseModel):
     title: str = DEFAULT_TITLE
     story: str = DEFAULT_STORY
     custom_prompt: Optional[str] = None
+
+
+class VideoRequest(BaseModel):
+    scene_id: str = "scene_01"
+    image_url: Optional[str] = None
+    title: str = DEFAULT_TITLE
+    story: str = DEFAULT_STORY
+    custom_prompt: Optional[str] = None
+
+
+def find_scene(scene_id: str, title: str = DEFAULT_TITLE, story: str = DEFAULT_STORY) -> Optional[Dict[str, Any]]:
+    pack = create_episode_pack(title, story)
+    return next((s for s in pack["scenes"] if s["id"] == scene_id), None)
 
 
 @app.get("/")
@@ -70,12 +84,7 @@ def create_episode(request: EpisodeRequest) -> Dict[str, Any]:
 
 @app.post("/image/generate")
 async def image_generate(request: ImageRequest) -> Dict[str, Any]:
-    pack = create_episode_pack(request.title, request.story)
-    selected = None
-    for scene in pack["scenes"]:
-        if scene["id"] == request.scene_id:
-            selected = scene
-            break
+    selected = find_scene(request.scene_id, request.title, request.story)
 
     if request.custom_prompt:
         prompt = request.custom_prompt
@@ -88,6 +97,20 @@ async def image_generate(request: ImageRequest) -> Dict[str, Any]:
 
     result = await generate_nano_image(prompt=prompt, scene_id=scene_id)
     return {"status": "ok", "image": result, "prompt": prompt}
+
+
+@app.post("/video/generate")
+async def video_generate(request: VideoRequest) -> Dict[str, Any]:
+    selected = find_scene(request.scene_id, request.title, request.story)
+    if request.custom_prompt:
+        prompt = request.custom_prompt
+    elif selected:
+        prompt = selected["grok_prompt"]
+    else:
+        return {"status": "error", "message": f"Scene not found: {request.scene_id}"}
+
+    result = await generate_grok_video(prompt=prompt, image_url=request.image_url)
+    return {"status": "ok", "video": result, "prompt": prompt}
 
 
 @app.post("/telegram/set-webhook")
@@ -112,9 +135,10 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                 "Команды:\n"
                 "/episode — собрать пакет серии\n"
                 "/scenes — список сцен\n"
-                "/prompt scene_01 — получить промпт Nano Banana\n"
-                "/grok scene_01 — получить промпт оживления\n"
-                "/image scene_01 — сгенерировать кадр Nano Banana\n\n"
+                "/prompt scene_01 — промпт Nano Banana\n"
+                "/grok scene_01 — промпт оживления\n"
+                "/image scene_01 — сгенерировать кадр\n"
+                "/animate scene_01 URL_КАРТИНКИ — оживить кадр\n\n"
                 "Начни с: /episode",
             )
 
@@ -136,8 +160,7 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
         elif text.startswith("/prompt"):
             parts = text.split(maxsplit=1)
             scene_id = parts[1].strip() if len(parts) > 1 else "scene_01"
-            pack = create_episode_pack(DEFAULT_TITLE, DEFAULT_STORY)
-            scene = next((s for s in pack["scenes"] if s["id"] == scene_id), None)
+            scene = find_scene(scene_id)
             if not scene:
                 await send_message(chat_id, f"Не нашла сцену: {scene_id}")
             else:
@@ -146,8 +169,7 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
         elif text.startswith("/grok"):
             parts = text.split(maxsplit=1)
             scene_id = parts[1].strip() if len(parts) > 1 else "scene_01"
-            pack = create_episode_pack(DEFAULT_TITLE, DEFAULT_STORY)
-            scene = next((s for s in pack["scenes"] if s["id"] == scene_id), None)
+            scene = find_scene(scene_id)
             if not scene:
                 await send_message(chat_id, f"Не нашла сцену: {scene_id}")
             else:
@@ -156,8 +178,7 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
         elif text.startswith("/image"):
             parts = text.split(maxsplit=1)
             scene_id = parts[1].strip() if len(parts) > 1 else "scene_01"
-            pack = create_episode_pack(DEFAULT_TITLE, DEFAULT_STORY)
-            scene = next((s for s in pack["scenes"] if s["id"] == scene_id), None)
+            scene = find_scene(scene_id)
             if not scene:
                 await send_message(chat_id, f"Не нашла сцену: {scene_id}")
             else:
@@ -165,10 +186,22 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                 result = await generate_nano_image(scene["nano_prompt"], scene_id=scene_id)
                 await send_photo(chat_id, result["local_path"], caption=f"✅ {scene['title']}\n{result['url']}")
 
+        elif text.startswith("/animate"):
+            parts = text.split(maxsplit=2)
+            scene_id = parts[1].strip() if len(parts) > 1 else "scene_01"
+            image_url = parts[2].strip() if len(parts) > 2 else None
+            scene = find_scene(scene_id)
+            if not scene:
+                await send_message(chat_id, f"Не нашла сцену: {scene_id}")
+            else:
+                await send_message(chat_id, f"Запускаю оживление: {scene['title']}…")
+                result = await generate_grok_video(scene["grok_prompt"], image_url=image_url)
+                await send_message(chat_id, f"✅ Видео результат:\n<code>{result}</code>")
+
         else:
             await send_message(
                 chat_id,
-                "Я поняла. Пока работаю командами:\n/episode\n/scenes\n/prompt scene_01\n/grok scene_01\n/image scene_01",
+                "Я поняла. Пока работаю командами:\n/episode\n/scenes\n/prompt scene_01\n/grok scene_01\n/image scene_01\n/animate scene_01 URL_КАРТИНКИ",
             )
 
     except Exception as exc:
